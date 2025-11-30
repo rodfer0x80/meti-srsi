@@ -1,0 +1,7 @@
+.cache
+main/main.c
+build/
+sdkconfig
+sdkconfig.old
+.devcontainer
+.vscode

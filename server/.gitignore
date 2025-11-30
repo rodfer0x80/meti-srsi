@@ -1,0 +1,4 @@
+.ruff-cache
+.venv
+logs
+data
