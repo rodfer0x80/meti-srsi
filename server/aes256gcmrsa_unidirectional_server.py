@@ -5,6 +5,7 @@ from src.server import Server
 class AES256GCMRSAUnidirectionalServer(Server):
     def __init__(self):
         super().__init__(logfile='logs/AES256GCMRSAUnidirectionalServer.log')
+        self.data_size = self.block_size - self.gcm_iv - self.gcm_tag - self.header_size
 
     def communication(self):
         while True:

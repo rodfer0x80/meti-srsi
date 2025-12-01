@@ -57,7 +57,8 @@ class Server:
         self.data_flow = 0
         self.hmac_size = 32
         self.header_size = 4
-        self.data_size = self.block_size - self.hmac_size - self.header_size
+        self.gcm_iv = 12 
+        self.gcm_tag = 16
 
     def read_client_list(self):
         """Read client list from file in disk"""

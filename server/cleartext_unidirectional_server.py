@@ -5,6 +5,7 @@ from src.server import Server
 class CleartextUnidirectionalServer(Server):
     def __init__(self):
         super().__init__(logfile='logs/CleartextUnidirectionalServer.log')
+        self.data_size = self.block_size
 
     def communication(self):
         """

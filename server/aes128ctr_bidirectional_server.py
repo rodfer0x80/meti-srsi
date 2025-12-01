@@ -5,6 +5,7 @@ from src.server import Server
 class AES128CTRBidirectionalServer(Server):
     def __init__(self):
         super().__init__(logfile='logs/AES128CTRBidirectionalServer.log')
+        self.data_size = self.block_size - self.hmac_size - self.header_size
 
     def communication(self):
         """

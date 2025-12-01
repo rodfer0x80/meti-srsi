@@ -210,8 +210,6 @@ class Protocol:
         # AESGCM.encrypt returns (ciphertext + tag) appended
         ciphertext_with_tag = self.gcm_cipher.encrypt(nonce, data, None)
 
-        # Return list to match existing API structure (list of chunks)
-        # We prepend nonce so receiver can decrypt
         return [nonce + ciphertext_with_tag]
 
     def aes256gcmrsa_decrypt(self, data):
