@@ -90,7 +90,6 @@ class Protocol:
         peer_public_key = peer_public_numbers.public_key(self.backend)
         shared_secret = self.private_key.exchange(peer_public_key)
 
-        # Derive keys
         self.aes_key, nonce_a, nonce_b, self.hmac_key = (
             self._aes128ctr_derive_keys(shared_secret)
         )
@@ -161,7 +160,7 @@ class Protocol:
 
         pem = self.rsa_public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            format=serialization.PublicFormat.PKCS1, #format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
         return pem
 
@@ -191,6 +190,9 @@ class Protocol:
 
             # Initialize AES-GCM
             self.gcm_cipher = AESGCM(self.session_key)
+
+            # Clear key from memory
+            self.rsa_private_key = None
         else:
             # Client implementation would go here (Encrypt generated key with server pub key)
             pass

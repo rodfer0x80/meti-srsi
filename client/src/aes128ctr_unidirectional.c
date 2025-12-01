@@ -26,7 +26,7 @@
 #define WIFI_PASS                  "WIFI_PASS"
 #define HOST_IP_ADDR               "192.168.1.106"
 #define PORT                       5666
-#define BLOCK_SIZE                 51
+#define BLOCK_SIZE                 4096
 #define DEBUG                      false
 #define TEST_DURATION_SEC          60
 // ----
@@ -37,7 +37,7 @@
 #define PAYLOAD_SIZE               (BLOCK_SIZE - HEADER_SIZE)
 #define MAX_BLOCK_SIZE             4096
 
-static const char *TAG = "ESP32_CLIENT";
+static const char *TAG = "ESP32_AES128_UNIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -322,11 +322,12 @@ void tcp_client_task(void *pvParameters) {
     uint8_t raw_data[DATA_LEN];
     memset(raw_data, 'A', DATA_LEN);
 
-    ESP_LOGW(TAG, ">>> STARTING FIXED SIZE STREAM (Data: %d + HMAC: %d  + HEADER: %d = %d Total) <<<", 
+    
+    ESP_LOGW(TAG, ">>> STARTING AES128 UNIDIRECTIONAL (Data: %d + HMAC: %d  + HEADER: %d = %d Total) <<<", 
              DATA_LEN, HMAC_SIZE, HEADER_SIZE, BLOCK_SIZE);
-
+    
     while ((esp_timer_get_time() - start_time) < duration_us) {
-        uint8_t packet[BLOCK_SIZE]; 
+        uint8_t packet[PAYLOAD_SIZE]; 
 
         // Encrypt the DATA_LEN bytes of 'A's
         // Output goes into the first DATA_LEN bytes of the packet
@@ -337,7 +338,8 @@ void tcp_client_task(void *pvParameters) {
         // Output appends to the end (bytes DATA_LEN-BLOCK_SIZE)
         mbedtls_md_hmac(md_info, hmac_key, 32, packet, DATA_LEN, packet + DATA_LEN);
 
-        // Send exactly BLOCK_SIZE bytes, send_frame adds the header at the start
+        // Send BLOCK_SIZE bytes, send_frame adds the header at the start
+        // [Header: 4 bytes | Data: DATA_LEN bytes | HMAC: 32 bytes]
         if (send_frame(sock, packet, PAYLOAD_SIZE) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;

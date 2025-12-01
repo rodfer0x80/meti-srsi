@@ -1,4 +1,6 @@
 import sys
+import os
+
 from src.server import Server
 
 
@@ -6,26 +8,35 @@ class AES256GCMRSABidirectionalServer(Server):
     def __init__(self):
         super().__init__(logfile='logs/AES256GCMRSABidirectionalServer.log')
         self.data_size = self.block_size - self.gcm_iv - self.gcm_tag - self.header_size
+        self.debug = int(os.environ.get('DEBUG', 0))
 
     def communication(self):
+        """
+        Handle encrypted communication with 
+        ESP32 bidirectional communication client
+        using AES-256-GCM encryption
+        """
+        self.data_flow = 0
+        self.logger.info(
+            f'Running AES256 with block size {self.block_size} bytes at total {self.data_size} bytes data'
+        )
         while True:
             try:
-                # Receive encrypted message
+                # Receive 
                 data = self.aes256gcmrsa_recv_encrypted()
                 if not data:
                     self.logger.info('Client disconnected (No data received)')
                     break
+                self.data_flow += self.data_size
                 msg = data.decode('utf-8', errors='ignore')
-                #self.logger.info(f'RX: {msg}')
-                self.data_flow += self.data_size
-                self.logger.info(f'Data flow: {self.data_flow} bytes')
+                if self.debug:
+                    self.logger.info(f'RX: {msg}')
 
-                # Send response
-                response = f'{msg}'
-                #self.logger.info(f'TX: {response}')
-                self.aes256gcmrsa_send_encrypted(response.encode())
+                # Send
+                self.aes256gcmrsa_send_encrypted(data)
+                if self.debug: 
+                    self.logger.info(f'TX: {msg}')
                 self.data_flow += self.data_size
-                self.logger.info(f'Data flow: {self.data_flow} bytes')
             except ConnectionResetError:
                 self.logger.error('Connection reset by peer')
                 break
@@ -34,6 +45,7 @@ class AES256GCMRSABidirectionalServer(Server):
                 import traceback
                 traceback.print_exc()
                 break
+        self.logger.info(f'Data: {self.data_flow} bytes')
 
 
 if __name__ == '__main__':

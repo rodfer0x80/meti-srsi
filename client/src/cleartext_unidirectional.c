@@ -20,14 +20,15 @@
 #define WIFI_PASS                  "WIFI_PASS"
 #define HOST_IP_ADDR               "192.168.1.106"
 #define PORT                       5666
-#define BLOCK_SIZE                 51 
+#define BLOCK_SIZE                 4096
 #define TEST_DURATION_SEC          60
+// ------
 
 #define MAX_BLOCK_SIZE             4096
 #define DATA_LEN                   BLOCK_SIZE - HEADER_SIZE
 #define HEADER_SIZE                4
 
-static const char *TAG = "ESP32_CLEARTEXT";
+static const char *TAG = "ESP32_CLEARTEXT_UNIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -57,7 +58,7 @@ void wifi_init_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-// Network Helper: Sends [4-byte Len] + [Data]
+// Sends [4-byte Len] + [Data]
 int send_frame(int sock, uint8_t *data, size_t len) {
     uint32_t net_len = htonl((uint32_t)len);
     // Send Header
@@ -89,8 +90,12 @@ void tcp_client_task(void *pvParameters) {
         vTaskDelete(NULL);
         return;
     }
+
+    // int flag = 1; // 1 means TCP_NODELAY is ON (Nagle's is OFF)
+    // if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0) {
+    //     ESP_LOGW(TAG, "Warning: Failed to set TCP_NODELAY. Latency may be affected.");
+    // }
     
-    // Attempt Connection
     if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) != 0) {
         ESP_LOGE(TAG, "Connection failed.");
         close(sock);
@@ -100,7 +105,6 @@ void tcp_client_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Connected.");
 
-    // Buffer Setup
     uint8_t *data_buffer = malloc(BLOCK_SIZE);
     if (!data_buffer) {
         ESP_LOGE(TAG, "Malloc failed");
@@ -114,18 +118,18 @@ void tcp_client_task(void *pvParameters) {
     int64_t duration_us = TEST_DURATION_SEC * 1000000LL;
     uint32_t packet_count = 0;
 
-    ESP_LOGW(TAG, ">>> STARTING FIXED SIZE STREAM (Data: %d + HEADER: %d = %d Total) <<<", 
+    ESP_LOGW(TAG, ">>> STARTING CLEARTEXT UNIDIRECTIONAL (Data: %d + HEADER: %d = %d Total) <<<", 
              DATA_LEN, HEADER_SIZE, BLOCK_SIZE);
     while ((esp_timer_get_time() - start_time) < duration_us) {
         
         // Send raw data with the length header (BLOCK_SIZE = DATA_LEN + HEADER_SIZE)
-        if (send_frame(sock, data_buffer, BLOCK_SIZE) < 0) {
+        if (send_frame(sock, data_buffer, DATA_LEN) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;
         }
         packet_count++;
         
-        // Optional: Yield slightly to prevent Watchdog trigger on very tight loops
+        // Yield slightly to prevent Watchdog trigger on very tight loops
         // vTaskDelay(1); 
     }
     

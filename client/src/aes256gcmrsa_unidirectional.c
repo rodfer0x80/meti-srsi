@@ -14,8 +14,6 @@
 #include "lwip/sys.h"
 #include "lwip/netdb.h"
 #include "lwip/dns.h"
-
-// Cryptography Imports
 #include "mbedtls/pk.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls/gcm.h"
@@ -28,7 +26,7 @@
 #define WIFI_PASS                  "WIFI_PASS"
 #define HOST_IP_ADDR               "192.168.1.106"
 #define PORT                       5666
-#define BLOCK_SIZE                 51
+#define BLOCK_SIZE                 4096
 #define TEST_DURATION_SEC          60
 
 // AES-GCM Constants
@@ -37,24 +35,23 @@
 #define GCM_IV_LEN                 12
 #define GCM_TAG_LEN                16
 
-
 // Packet Structure Calculation
-// Packet = [IV (12)] + [Ciphertext (N)] + [Tag (16)]
+// Packet = [Header(4)] + [IV (12)] + [Ciphertext (N)] + [Tag (16)]
 #define PAYLOAD_OVERHEAD           (GCM_IV_LEN + GCM_TAG_LEN)
-#define PLAINTEXT_LEN              (BLOCK_SIZE - PAYLOAD_OVERHEAD)
 #define MAX_BLOCK_SIZE             4096
+#define HEADER_SIZE                4
+#define PAYLOAD_SIZE               BLOCK_SIZE - HEADER_SIZE
+#define PLAINTEXT_LEN              (PAYLOAD_SIZE - PAYLOAD_OVERHEAD)
 
-static const char *TAG = "ESP32_GCM_CLIENT";
+static const char *TAG = "ESP32_AES256_UNIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
-// Global Contexts
 mbedtls_gcm_context gcm_ctx;
 mbedtls_entropy_context entropy;
 mbedtls_ctr_drbg_context ctr_drbg;
 uint8_t session_key[AES_KEY_LEN_BYTES]; // 32 bytes
 
-// Wifi Handler
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
@@ -80,7 +77,6 @@ void wifi_init_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-// Network Helpers
 int send_frame(int sock, uint8_t *data, size_t len) {
     uint32_t net_len = htonl((uint32_t)len);
     if (send(sock, &net_len, 4, 0) < 0) return -1;
@@ -98,18 +94,17 @@ int recv_frame(int sock, uint8_t **out_buf, size_t *out_len) {
     int r = recv(sock, &net_len, 4, MSG_WAITALL);
     if (r <= 0) return -1;
     *out_len = ntohl(net_len);
-    *out_buf = malloc(*out_len + 1); // +1 for null terminator safety if PEM
+    *out_buf = malloc(*out_len + 1); // +1 for null terminator safety for PEM
     if (!*out_buf) return -1;
     r = recv(sock, *out_buf, *out_len, MSG_WAITALL);
     if (r <= 0) {
         free(*out_buf);
         return -1;
     }
-    (*out_buf)[*out_len] = '\0'; // Null terminate safely
+    (*out_buf)[*out_len] = '\0';
     return 0;
 }
 
-// Handshake: RSA Exchange
 int perform_handshake(int sock) {
     ESP_LOGI(TAG, "Starting RSA Handshake...");
     int ret;
@@ -123,7 +118,7 @@ int perform_handshake(int sock) {
     const char *pers = "esp32_gcm";
     mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers));
 
-    // 1. Receive Server Public Key (PEM format)
+    // Receive Server Public Key (PEM format)
     uint8_t *pem_buf = NULL;
     size_t pem_len = 0;
     if (recv_frame(sock, &pem_buf, &pem_len) < 0) {
@@ -132,16 +127,16 @@ int perform_handshake(int sock) {
     }
     ESP_LOGI(TAG, "Received Server Key (%u bytes)", pem_len);
 
-    // 2. Parse Public Key
+    // Parse Public Key
     // mbedtls requires the buffer to include the null terminator for PEM
     ret = mbedtls_pk_parse_public_key(&srv_pub_key, pem_buf, pem_len + 1);
-    free(pem_buf); // Done with raw buffer
+    free(pem_buf);
     if (ret != 0) {
         ESP_LOGE(TAG, "Failed to parse public key -0x%04x", -ret);
         return -1;
     }
 
-    // 3. Configure Padding to OAEP (Matches Python cryptography default)
+    // Configure Padding to OAEP: matche Python cryptography default
     if (mbedtls_pk_get_type(&srv_pub_key) == MBEDTLS_PK_RSA) {
         mbedtls_rsa_context *rsa = mbedtls_pk_rsa(srv_pub_key);
         // Padding: OAEP, Hash: SHA256
@@ -151,12 +146,12 @@ int perform_handshake(int sock) {
         return -1;
     }
 
-    // 4. Generate Random Session Key (32 bytes / 256 bits)
+    // Generate Random Session Key (32 bytes / 256 bits)
     mbedtls_ctr_drbg_random(&ctr_drbg, session_key, AES_KEY_LEN_BYTES);
     ESP_LOGI(TAG, "Generated Session Key");
 
-    // 5. Encrypt Session Key using Server's Public Key
-    uint8_t encrypted_key[512]; // Buffer large enough for 2048-bit RSA output (256 bytes)
+    // Encrypt Session Key using Server's Public Key
+    uint8_t encrypted_key[512]; // > 245B (RSA 2048)
     size_t encrypted_len = 0;
 
     ret = mbedtls_pk_encrypt(&srv_pub_key, 
@@ -169,11 +164,11 @@ int perform_handshake(int sock) {
         return -1;
     }
 
-    // 6. Send Encrypted Session Key
+    // Send Encrypted Session Key
     ESP_LOGI(TAG, "Sending Encrypted Session Key (%u bytes)", encrypted_len);
     send_frame(sock, encrypted_key, encrypted_len);
 
-    // 7. Initialize AES-GCM Context
+    // Initialize AES-GCM Context
     ret = mbedtls_gcm_setkey(&gcm_ctx, MBEDTLS_CIPHER_ID_AES, session_key, AES_KEY_BITS);
     if (ret != 0) {
         ESP_LOGE(TAG, "GCM Setkey failed");
@@ -216,27 +211,24 @@ void tcp_client_task(void *pvParameters) {
         return;
     }
 
-    // --- Data Transmission Loop ---
     int64_t start_time = esp_timer_get_time();
     int64_t duration_us = TEST_DURATION_SEC * 1000000LL;
 
-    // Raw Payload: 'A's
     uint8_t *plaintext = malloc(PLAINTEXT_LEN);
     memset(plaintext, 'A', PLAINTEXT_LEN);
 
     // TX Buffer: [IV (12)] + [Ciphertext (PlaintextLen)] + [Tag (16)]
-    // Ciphertext and Tag are usually output separately by mbedtls, we must assemble.
-    uint8_t *tx_buffer = malloc(BLOCK_SIZE);
+    // Ciphertext and Tag are usually output separately by mbedtls and must be assembled
+    uint8_t *tx_buffer = malloc(PAYLOAD_SIZE);
     
     uint8_t *p_iv = tx_buffer; 
     uint8_t *p_ciphertext = tx_buffer + GCM_IV_LEN; 
     uint8_t *p_tag = tx_buffer + GCM_IV_LEN + PLAINTEXT_LEN;
 
-    ESP_LOGW(TAG, "Starting GCM Stream. BlockSize: %d, Plaintext: %d", BLOCK_SIZE, PLAINTEXT_LEN);
+    ESP_LOGW(TAG, "STARTING AES256 UNIDIRECTIONAL. BLOCK_SIZE: %d, DATA_SIZE: %d", BLOCK_SIZE, PLAINTEXT_LEN);
 
     while ((esp_timer_get_time() - start_time) < duration_us) {
-        
-        // Generate unique IV for this packet
+        // Generate unique IV
         mbedtls_ctr_drbg_random(&ctr_drbg, p_iv, GCM_IV_LEN);
 
         // Encrypt and Tag
@@ -254,7 +246,7 @@ void tcp_client_task(void *pvParameters) {
         }
 
         // send_frame adds the 4-byte length header
-        if (send_frame(sock, tx_buffer, BLOCK_SIZE) < 0) {
+        if (send_frame(sock, tx_buffer, PAYLOAD_SIZE) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;
         }

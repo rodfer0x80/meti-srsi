@@ -26,7 +26,7 @@
 #define WIFI_PASS                  "WIFI_PASS"
 #define HOST_IP_ADDR               "192.168.1.106"
 #define PORT                       5666
-#define BLOCK_SIZE                 51
+#define BLOCK_SIZE                 4096
 #define TEST_DURATION_SEC          60
 
 // AES-GCM Constants
@@ -36,22 +36,22 @@
 #define GCM_TAG_LEN                16
 
 // Packet Structure Calculation
-// Packet = [IV (12)] + [Ciphertext (N)] + [Tag (16)]
+// Packet = [Header(4)] + [IV (12)] + [Ciphertext (N)] + [Tag (16)]
 #define PAYLOAD_OVERHEAD           (GCM_IV_LEN + GCM_TAG_LEN)
-#define PLAINTEXT_LEN              (BLOCK_SIZE - PAYLOAD_OVERHEAD)
 #define MAX_BLOCK_SIZE             4096
+#define HEADER_SIZE                4
+#define PAYLOAD_SIZE               BLOCK_SIZE - HEADER_SIZE
+#define PLAINTEXT_LEN              (PAYLOAD_SIZE - PAYLOAD_OVERHEAD)
 
-static const char *TAG = "ESP32_GCM_CLIENT";
+static const char *TAG = "ESP32_AES256_BIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
-// Global Contexts
 mbedtls_gcm_context gcm_ctx;
 mbedtls_entropy_context entropy;
 mbedtls_ctr_drbg_context ctr_drbg;
 uint8_t session_key[AES_KEY_LEN_BYTES]; // 32 bytes
 
-// Wifi Handler
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
@@ -77,7 +77,6 @@ void wifi_init_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-// Network Helpers
 int send_frame(int sock, uint8_t *data, size_t len) {
     uint32_t net_len = htonl((uint32_t)len);
     if (send(sock, &net_len, 4, 0) < 0) return -1;
@@ -92,29 +91,42 @@ int send_frame(int sock, uint8_t *data, size_t len) {
 
 int recv_frame(int sock, uint8_t **out_buf, size_t *out_len) {
     uint32_t net_len = 0;
-    int r = recv(sock, &net_len, 4, MSG_WAITALL);
-    if (r <= 0) return -1;
-    *out_len = ntohl(net_len);
     
-    // Safety check for malloc
-    if (*out_len > MAX_BLOCK_SIZE * 2) {
-        ESP_LOGE(TAG, "Frame too large: %u", *out_len);
-        return -1;
+    // Receive 4-byte header
+    size_t header_received = 0;
+    uint8_t *header_ptr = (uint8_t*)&net_len;
+    while(header_received < 4) {
+        int r = recv(sock, header_ptr + header_received, 4 - header_received, 0);
+        if (r <= 0) return -1;
+        header_received += r;
     }
 
-    *out_buf = malloc(*out_len + 1); // +1 for null terminator safety
+    *out_len = ntohl(net_len);
+    
+    // Safety check for overflow length
+    if (*out_len > MAX_BLOCK_SIZE*2) { 
+        ESP_LOGE(TAG, "Packet too large: %d", *out_len);
+        return -1; 
+    }
+
+    *out_buf = malloc(*out_len);
     if (!*out_buf) return -1;
     
-    r = recv(sock, *out_buf, *out_len, MSG_WAITALL);
-    if (r <= 0) {
-        free(*out_buf);
-        return -1;
+    // Force recv loop until ALL bytes arrive
+    size_t total_received = 0;
+    while (total_received < *out_len) {
+        int r = recv(sock, *out_buf + total_received, *out_len - total_received, 0);
+        if (r <= 0) {
+            free(*out_buf);
+            return -1;
+        }
+        total_received += r;
     }
-    (*out_buf)[*out_len] = '\0'; // Null terminate safely
+    
     return 0;
 }
 
-// Handshake: RSA Exchange
+
 int perform_handshake(int sock) {
     ESP_LOGI(TAG, "Starting RSA Handshake...");
     int ret;
@@ -125,10 +137,12 @@ int perform_handshake(int sock) {
     mbedtls_ctr_drbg_init(&ctr_drbg);
     mbedtls_gcm_init(&gcm_ctx);
 
+    ESP_LOGI(TAG, "Seeding RNG...");
     const char *pers = "esp32_gcm";
     mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *)pers, strlen(pers));
 
-    // 1. Receive Server Public Key (PEM format)
+    ESP_LOGI(TAG, "Waiting for Server Public Key...");
+    // Receive Server Public Key (PEM format)
     uint8_t *pem_buf = NULL;
     size_t pem_len = 0;
     if (recv_frame(sock, &pem_buf, &pem_len) < 0) {
@@ -137,7 +151,7 @@ int perform_handshake(int sock) {
     }
     ESP_LOGI(TAG, "Received Server Key (%u bytes)", pem_len);
 
-    // 2. Parse Public Key
+    // Parse Public Key
     ret = mbedtls_pk_parse_public_key(&srv_pub_key, pem_buf, pem_len + 1);
     free(pem_buf); 
     if (ret != 0) {
@@ -145,7 +159,7 @@ int perform_handshake(int sock) {
         return -1;
     }
 
-    // 3. Configure Padding to OAEP
+    // Configure Padding to OAEP
     if (mbedtls_pk_get_type(&srv_pub_key) == MBEDTLS_PK_RSA) {
         mbedtls_rsa_context *rsa = mbedtls_pk_rsa(srv_pub_key);
         mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
@@ -154,11 +168,11 @@ int perform_handshake(int sock) {
         return -1;
     }
 
-    // 4. Generate Random Session Key
+    // Generate Random Session Key
     mbedtls_ctr_drbg_random(&ctr_drbg, session_key, AES_KEY_LEN_BYTES);
     ESP_LOGI(TAG, "Generated Session Key");
 
-    // 5. Encrypt Session Key
+    //  Encrypt Session Key
     uint8_t encrypted_key[512]; 
     size_t encrypted_len = 0;
 
@@ -172,11 +186,11 @@ int perform_handshake(int sock) {
         return -1;
     }
 
-    // 6. Send Encrypted Session Key
+    // Send Encrypted Session Key
     ESP_LOGI(TAG, "Sending Encrypted Session Key (%u bytes)", encrypted_len);
     send_frame(sock, encrypted_key, encrypted_len);
 
-    // 7. Initialize AES-GCM Context
+    // Initialize AES-GCM Context
     ret = mbedtls_gcm_setkey(&gcm_ctx, MBEDTLS_CIPHER_ID_AES, session_key, AES_KEY_BITS);
     if (ret != 0) {
         ESP_LOGE(TAG, "GCM Setkey failed");
@@ -219,7 +233,6 @@ void tcp_client_task(void *pvParameters) {
         return;
     }
 
-    // --- Bidirectional Loop ---
     int64_t start_time = esp_timer_get_time();
     int64_t duration_us = TEST_DURATION_SEC * 1000000LL;
 
@@ -227,7 +240,7 @@ void tcp_client_task(void *pvParameters) {
     uint8_t *plaintext_out = malloc(PLAINTEXT_LEN);
     memset(plaintext_out, 'A', PLAINTEXT_LEN);
 
-    uint8_t *tx_buffer = malloc(BLOCK_SIZE);
+    uint8_t *tx_buffer = malloc(PAYLOAD_SIZE);
     
     // Buffer to hold decrypted response
     // Must be large enough for largest expected response
@@ -237,7 +250,7 @@ void tcp_client_task(void *pvParameters) {
 
     while ((esp_timer_get_time() - start_time) < duration_us) {
         
-        // --- 1. ENCRYPT & SEND ---
+        // SEND
         uint8_t *p_iv = tx_buffer; 
         uint8_t *p_ciphertext = tx_buffer + GCM_IV_LEN; 
         uint8_t *p_tag = tx_buffer + GCM_IV_LEN + PLAINTEXT_LEN;
@@ -257,12 +270,12 @@ void tcp_client_task(void *pvParameters) {
             break;
         }
 
-        if (send_frame(sock, tx_buffer, BLOCK_SIZE) < 0) {
+        if (send_frame(sock, tx_buffer, PAYLOAD_SIZE) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;
         }
 
-        // --- 2. RECEIVE & DECRYPT ---
+        // RECV
         uint8_t *rx_buf = NULL;
         size_t rx_len = 0;
 

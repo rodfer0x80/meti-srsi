@@ -37,7 +37,7 @@
 #define PAYLOAD_SIZE               (BLOCK_SIZE - HEADER_SIZE)
 #define MAX_BLOCK_SIZE             4096
 
-static const char *TAG = "ESP32_CLIENT";
+static const char *TAG = "ESP32_AES128_BIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -135,6 +135,7 @@ int recv_frame(int sock, uint8_t **out_buf, size_t *out_len) {
     return 0;
 }
 
+
 int perform_handshake(int sock) {
     ESP_LOGI(TAG, "Starting Handshake...");
     
@@ -170,7 +171,7 @@ int perform_handshake(int sock) {
     mbedtls_dhm_read_public(&dhm, srv_key, srv_len);
     free(srv_key);
 
-    // 2. Generate and Send Client Public Key 
+    // Generate and Send Client Public Key 
     size_t pub_len = mbedtls_dhm_get_len(&dhm);
     uint8_t *pub_buf = malloc(pub_len);
     if (!pub_buf) {
@@ -182,7 +183,7 @@ int perform_handshake(int sock) {
     send_frame(sock, pub_buf, pub_len);
     free(pub_buf);
 
-    // 3. Calculate Shared Secret
+    // Calculate Shared Secret
     size_t dhm_len = mbedtls_dhm_get_len(&dhm);  
     uint8_t *final_secret = malloc(dhm_len);
     if (!final_secret) {
@@ -201,7 +202,7 @@ int perform_handshake(int sock) {
         ESP_LOGI(TAG, "Shared secret actual length: %u bytes", act_len);
     }
 
-    // 4. Key Derivation using SHA256
+    // Key Derivation using SHA256
     uint8_t hash1[32];
     mbedtls_sha256_context sha_ctx;
     mbedtls_sha256_init(&sha_ctx);
@@ -295,10 +296,9 @@ void tcp_client_task(void *pvParameters) {
     int64_t duration_us = TEST_DURATION_SEC * 1000000LL; 
     const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);  
 
-    // Prepare buffer - ALLOCATE ON HEAP to avoid Stack Overflow
     uint8_t *raw_data = malloc(DATA_LEN);
-    uint8_t *packet = malloc(BLOCK_SIZE);
-    uint8_t *decrypted_rx = malloc(BLOCK_SIZE);
+    uint8_t *packet = malloc(PAYLOAD_SIZE);
+    uint8_t *decrypted_rx = malloc(PAYLOAD_SIZE);
 
     if (!raw_data || !packet || !decrypted_rx) {
         ESP_LOGE(TAG, "Failed to allocate heap memory for buffers");
@@ -312,7 +312,7 @@ void tcp_client_task(void *pvParameters) {
 
     memset(raw_data, 'A', DATA_LEN);
     
-    ESP_LOGW(TAG, ">>> STARTING BIDIRECTIONAL (Data: %d + HMAC: %d  + HEADER: %d = %d Total) <<<", 
+    ESP_LOGW(TAG, ">>> STARTING AES128 BIDIRECTIONAL (Data: %d + HMAC: %d  + HEADER: %d = %d Total) <<<", 
              DATA_LEN, HMAC_SIZE, HEADER_SIZE, BLOCK_SIZE);
 
     while ((esp_timer_get_time() - start_time) < duration_us) {
@@ -323,7 +323,8 @@ void tcp_client_task(void *pvParameters) {
         
         // HMAC
         mbedtls_md_hmac(md_info, hmac_key, 32, packet, DATA_LEN, packet + DATA_LEN);
-
+        
+        // [Header: 4 bytes | Data: DATA_LEN bytes | HMAC: 32 bytes]
         if (send_frame(sock, packet, PAYLOAD_SIZE) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;

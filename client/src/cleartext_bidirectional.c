@@ -20,18 +20,18 @@
 #define WIFI_PASS                  "WIFI_PASS"
 #define HOST_IP_ADDR               "192.168.1.106"
 #define PORT                       5666
-#define BLOCK_SIZE                 51 
+#define BLOCK_SIZE                 4096
 #define TEST_DURATION_SEC          60
+// ------
 
 #define MAX_BLOCK_SIZE             4096
 #define HEADER_SIZE                4
 #define DATA_LEN                   BLOCK_SIZE - HEADER_SIZE
 
-static const char *TAG = "ESP32_CLEARTEXT";
+static const char *TAG = "ESP32_CLEARTEXT_BIDIRECTIONAL";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
-// Wifi Handler
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
@@ -63,17 +63,17 @@ void wifi_init_sta(void) {
 int send_frame(int sock, uint8_t *data, size_t len) {
     uint32_t net_len = htonl((uint32_t)len);
     
-    // 1. Send Header
+    // Header
     if (send(sock, &net_len, 4, 0) < 0) return -1;
     
-    // 2. Send Payload
+    // Payload
     int sent = 0;
     while(sent < len) {
         int r = send(sock, data + sent, len - sent, 0);
         if (r < 0) return -1;
         sent += r;
     }
-    return sent; // Returns bytes of PAYLOAD sent
+    return sent;
 }
 
 /**
@@ -84,7 +84,7 @@ int recv_frame(int sock, uint8_t *buffer, size_t max_buffer_len) {
     uint32_t net_len = 0;
     int received = 0;
 
-    // 1. Read Header (4 bytes) - Ensure we get all 4 bytes
+    // Header (4 bytes)
     while (received < 4) {
         int r = recv(sock, ((uint8_t*)&net_len) + received, 4 - received, 0);
         if (r <= 0) return -1; // Error or Connection Closed
@@ -99,7 +99,7 @@ int recv_frame(int sock, uint8_t *buffer, size_t max_buffer_len) {
         return -2; 
     }
 
-    // 2. Read Payload
+    // Payload
     received = 0;
     while (received < payload_len) {
         int r = recv(sock, buffer + received, payload_len - received, 0);
@@ -107,7 +107,7 @@ int recv_frame(int sock, uint8_t *buffer, size_t max_buffer_len) {
         received += r;
     }
 
-    return received; // Success
+    return received;
 }
 
 void tcp_client_task(void *pvParameters) {
@@ -126,6 +126,10 @@ void tcp_client_task(void *pvParameters) {
         vTaskDelete(NULL);
         return;
     }
+    // int flag = 1; // 1 means TCP_NODELAY is ON (Nagle's is OFF)
+    // if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0) {
+    //     ESP_LOGW(TAG, "Warning: Failed to set TCP_NODELAY. Latency may be affected.");
+    // }
     
     if (connect(sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr)) != 0) {
         ESP_LOGE(TAG, "Connection failed.");
@@ -136,9 +140,8 @@ void tcp_client_task(void *pvParameters) {
 
     ESP_LOGI(TAG, "Connected.");
 
-    // Allocate Buffers
     uint8_t *tx_buffer = malloc(BLOCK_SIZE);
-    uint8_t *rx_buffer = malloc(MAX_BLOCK_SIZE);
+    uint8_t *rx_buffer = malloc(BLOCK_SIZE);
 
     if (!tx_buffer || !rx_buffer) {
         ESP_LOGE(TAG, "Malloc failed");
@@ -152,17 +155,17 @@ void tcp_client_task(void *pvParameters) {
     int64_t start_time = esp_timer_get_time();
     int64_t duration_us = TEST_DURATION_SEC * 1000000LL;
 
-    ESP_LOGW(TAG, ">>> STARTING FIXED SIZE STREAM (Data: %d + HEADER: %d = %d Total) <<<", 
+    ESP_LOGW(TAG, ">>> STARTING CLEARTEXT BIDIRECTIONAL(Data: %d + HEADER: %d = %d Total) <<<", 
              DATA_LEN, HEADER_SIZE, BLOCK_SIZE);
     while ((esp_timer_get_time() - start_time) < duration_us) {
         
-        // 1. SEND Request
+        // Send raw data with the length header (BLOCK_SIZE = DATA_LEN + HEADER_SIZE)
         if (send_frame(sock, tx_buffer, DATA_LEN) < 0) {
             ESP_LOGE(TAG, "Send failed");
             break;
         }
 
-        // 2. RECEIVE Response (Blocking wait)
+        // Receive response (Blocking wait)
         int rx_len = recv_frame(sock, rx_buffer, MAX_BLOCK_SIZE);
         if (rx_len < 0) {
             ESP_LOGE(TAG, "Receive failed or Server closed connection");
@@ -180,5 +183,5 @@ void tcp_client_task(void *pvParameters) {
 void app_main(void) {
     ESP_ERROR_CHECK(nvs_flash_init());
     wifi_init_sta();
-    xTaskCreate(tcp_client_task, "tcp_client", MAX_BLOCK_SIZE*2, NULL, 5, NULL);
+    xTaskCreate(tcp_client_task, "tcp_client", MAX_BLOCK_SIZE*4, NULL, 5, NULL);
 }
