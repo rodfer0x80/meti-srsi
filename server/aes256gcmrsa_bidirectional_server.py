@@ -7,12 +7,14 @@ from src.server import Server
 class AES256GCMRSABidirectionalServer(Server):
     def __init__(self):
         super().__init__(logfile='logs/AES256GCMRSABidirectionalServer.log')
-        self.data_size = self.block_size - self.gcm_iv - self.gcm_tag - self.header_size
+        self.data_size = (
+            self.block_size - self.gcm_iv - self.gcm_tag - self.header_size
+        )
         self.debug = int(os.environ.get('DEBUG', 0))
 
     def communication(self):
         """
-        Handle encrypted communication with 
+        Handle encrypted communication with
         ESP32 bidirectional communication client
         using AES-256-GCM encryption
         """
@@ -22,7 +24,7 @@ class AES256GCMRSABidirectionalServer(Server):
         )
         while True:
             try:
-                # Receive 
+                # Receive
                 data = self.aes256gcmrsa_recv_encrypted()
                 if not data:
                     self.logger.info('Client disconnected (No data received)')
@@ -34,7 +36,7 @@ class AES256GCMRSABidirectionalServer(Server):
 
                 # Send
                 self.aes256gcmrsa_send_encrypted(data)
-                if self.debug: 
+                if self.debug:
                     self.logger.info(f'TX: {msg}')
                 self.data_flow += self.data_size
             except ConnectionResetError:
@@ -43,6 +45,7 @@ class AES256GCMRSABidirectionalServer(Server):
             except Exception as e:
                 self.logger.error(f'Communication error: {e}')
                 import traceback
+
                 traceback.print_exc()
                 break
         self.logger.info(f'Data: {self.data_flow} bytes')
